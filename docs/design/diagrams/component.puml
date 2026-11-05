@@ -1,0 +1,114 @@
+@startuml component
+title Component diagram: one Java 21 process, one Maven module (packages under com.splitsmart)\nAll MVP FRs: FR-001 to FR-023, FR-025 to FR-029, FR-031 to FR-042, FR-047 to FR-049; NFR-001 to NFR-007, NFR-010, NFR-011
+skinparam shadowing false
+skinparam componentStyle uml2
+skinparam packageStyle rectangle
+skinparam defaultFontSize 12
+skinparam nodesep 45
+skinparam ranksep 50
+
+package "SplitSmart desktop process (single JVM, one signed-in member)" as process {
+
+  package "ui (Swing)" as ui {
+    component "Views\n(MainFrame, panels, dialogs)\n[Swing event dispatch thread]" as Views
+    component "Controllers\noperation IDs, loading,\nduplicate-submit guard,\nretained input" as Controllers
+    component "SessionWorker\n[background worker threads]\nhashing, image decode, JDBC,\nfiles, reports" as Workers
+  }
+
+  package "service" as service {
+    component "Application services\nAccount, Group, Expense, Approval,\nPayment, Balance, Notification, Report" as Services
+    component "CommandRunner + GroupLocks\none unit of work per use case,\ngroup serialization,\noperation results (NFR-010)" as Runner
+    component "NotificationService writer\njoins the caller's UnitOfWork\n(never commits on its own)" as NotifWriter
+    component "Session" as SessionC
+  }
+
+  package "domain" as domain {
+    component "Entities and value objects\nUser, Group, Membership, Expense, Share,\nApprovalDecision, Payment, Notification,\nReceiptRef, LifecycleEvent, Money, Percentage" as Entities
+    component "domain.rules\nSplitCalculator, ApprovalPolicy,\nBalanceCalculator, AmountRules,\nPasswordPolicy" as Rules
+  }
+
+  package "service.port" as port {
+    interface "TransactionRunner /\nUnitOfWork" as ITx
+    interface "Repositories\n(User, Group, Expense, Payment,\nNotification, LifecycleEvent,\nOperationRecord)" as IRepo
+    interface "ReceiptStore" as IReceipt
+    interface "PasswordHasher" as IHash
+    interface "java.time.Clock" as IClock
+  }
+
+  package "persistence" as persistence {
+    component "JDBC adapters\nJdbcTransactionRunner, JdbcUnitOfWork,\nJdbc*Repository" as Jdbc
+    component "Database startup\nMigrationRunner (schema_version,\nV001~_~_initial.sql, checksum,\nin-progress marker)" as Migr
+  }
+
+  package "storage" as storage {
+    component "FileReceiptStore\nstage, finalize, open,\nstartup reconciliation" as FileStore
+  }
+
+  package "security" as security {
+    component "Pbkdf2PasswordHasher" as Pbkdf2
+  }
+
+  package "app" as app {
+    component "AppContext\nmanual wiring, startup order,\nclean shutdown" as AppCtx
+    component "DataDirectoryLock\nexclusive owner of --data-dir" as DirLock
+  }
+}
+
+database "H2 database file\n(splitsmart.mv.db)" as H2
+folder "Receipt files\nreceipts/ and receipts/staging/" as Files
+
+Views --> Controllers : user actions
+Controllers --> Workers : submit
+Workers --> Services : calls (off the EDT)
+Workers ..> Views : results via EDT\nonly for the current session
+Services --> Runner : mutations
+Services --> NotifWriter : same UnitOfWork
+Services --> Rules
+Services --> Entities
+Services ..> SessionC
+Rules --> Entities
+Runner --> ITx
+Services --> IRepo
+Services --> IReceipt
+Services --> IHash
+Services --> IClock
+
+Jdbc -up-|> ITx
+Jdbc -up-|> IRepo
+FileStore -up-|> IReceipt
+Pbkdf2 -up-|> IHash
+
+Jdbc --> H2 : JDBC, auto-commit off
+Migr --> H2
+FileStore --> Files
+
+AppCtx --> DirLock : 1. acquire lock
+AppCtx --> Migr : 2. validate or migrate
+AppCtx --> FileStore : 3. reconcile, wire
+AppCtx --> Jdbc : wire
+AppCtx --> Pbkdf2 : wire
+AppCtx --> Services : construct with ports + Clock
+AppCtx --> Views : 4. show sign-in
+
+note right of Workers
+  NFR-011: slow work never runs on the
+  event dispatch thread. A result arriving
+  after sign-out is discarded (US1-AS10).
+end note
+
+note bottom of Runner
+  D-2: source rows, decisions, status changes,
+  lifecycle events, operation results and required
+  notifications commit or roll back together.
+  Files are not rolled back by JDBC; the receipt
+  protocol (stage, finalize, reference, reconcile)
+  covers them (FR-017, US3-AS14).
+end note
+
+note as NoServer
+  Not present in the MVP: no server, HTTP or SSE
+  transport, no balance or posting component,
+  no remote idempotency service. Balances are
+  derived by BalanceCalculator on each read.
+end note
+@enduml

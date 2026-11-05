@@ -1,0 +1,133 @@
+@startuml activity-record-expense
+title Activity: record a shared expense with an optional receipt\nFR-004, FR-012 to FR-022, FR-025, FR-026, FR-048; NFR-001, NFR-002, NFR-005, NFR-006, NFR-010, NFR-011
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #333333
+
+|Member|
+start
+:Open the expense form in group G;
+|Swing UI|
+:Load active members of G on a worker
+(GroupService.members; FR-004, FR-010);
+|Member|
+:Enter amount and percentages as typed decimal text (D-4),
+date and description;
+:Payer defaults to self; participants ticked in listed
+order, payer ticked by default and may be unticked (FR-013);
+:Choose split method EQUAL or PERCENTAGE;
+:Optionally choose one receipt image (FR-017);
+|Swing UI|
+:Request preview on a worker; show loading (NFR-011);
+|ExpenseService|
+if (Session member is an active member of G?) then (no)
+  |Swing UI|
+  :Access-denied state; no group data shown
+  (FR-004, NFR-002);
+  stop
+else (yes)
+endif
+|ExpenseService|
+:Validate fields: amount 0.01 to 100,000.00 with at most two decimals
+(AmountRules, FR-016); description and date present (FR-018),
+at least one participant; payer and participants active in G (FR-013),
+PERCENTAGE: each > 0, at most two decimals, total exactly 100.00 (FR-015);
+if (All fields valid?) then (no)
+  |Swing UI|
+  :Show field-specific message (and the current
+  percentage total); keep every other entry (NFR-005);
+  stop
+else (yes)
+endif
+|ExpenseService|
+:SplitCalculator: shares rounded DOWN to the cent,
+leftover cents one at a time in listed order,
+sum of shares = amount (FR-014, FR-015, NFR-001);
+:ApprovalPolicy: approvers = payer + participants - creator (FR-026);
+if (At least one approver?) then (no)
+  |Swing UI|
+  :Refuse: nobody can approve an expense that involves
+  only its creator; nothing is saved (US4-AS8);
+  stop
+else (yes)
+endif
+|Swing UI|
+:Show ordered share preview (FR-019, US3-AS11);
+|Member|
+:Confirm Save;
+|Swing UI|
+:Allocate operation UUID; disable Save; show loading (NFR-011);
+:Call recordExpense(session, opId, draft) on a worker;
+|ExpenseService|
+if (Receipt chosen?) then (yes)
+  |ReceiptStore|
+  :Check byte count <= 5,000,000 and decode content
+  as JPEG or PNG; extension alone is not trusted (US3-AS13);
+  if (Valid receipt?) then (no)
+    |Swing UI|
+    :Receipt-specific message; other entries kept,
+    choosing no receipt remains valid (FR-017);
+    stop
+  else (yes)
+  endif
+  |ReceiptStore|
+  :Stage bytes under the data directory,
+  write, force and close the file;
+  :Finalize: atomic move to a generated UUID path
+  on the same file system (before any DB reference);
+  if (Finalize succeeded?) then (no)
+    :Delete the staged file;
+    |Swing UI|
+    :Storage-unavailable message, NOT_COMMITTED,
+    entries kept; retry allowed (NFR-010);
+    stop
+  else (yes)
+  endif
+else (no)
+endif
+|ExpenseService|
+:CommandRunner: lock group G, open one UnitOfWork;
+if (Operation ID already recorded for this member?) then (same request)
+  :Recheck access and return the prior result,
+  no second expense or notification (US1-AS9);
+  |Swing UI|
+  :Show the saved result;
+  stop
+else (new)
+endif
+|UnitOfWork (H2)|
+:Re-check membership of creator, payer and participants;
+:Insert Expense PENDING with ordered Shares and the
+receipt reference (FR-012, FR-020, FR-025);
+:Insert EXPENSE_RECORDED notifications for payer and participants,
+excluding the creator (FR-021, FR-022);
+:Insert operation result COMMITTED;
+:Commit;
+if (Commit result?) then (committed)
+  |Swing UI|
+  :Saved. Group expense list (listExpenses) shows the
+  expense PENDING with its ID; balances unchanged
+  (FR-025, FR-048, US3-AS12);
+  stop
+elseif (Commit result?) then (rolled back)
+  |ExpenseService|
+  :ReceiptStore.discard: remove the
+  unreferenced finalized file;
+  |Swing UI|
+  :Not saved (NOT_COMMITTED); entries kept,
+  retry with the same operation ID (NFR-010);
+  stop
+else (uncertain)
+  |ExpenseService|
+  :Keep receipt files until references and
+  operation status can be checked;
+  |Swing UI|
+  :Outcome UNKNOWN; disable another save,
+  look up the operation ID when the store is available,
+  COMMITTED shows saved, absent allows retry (US1-AS9),
+  startup reconciliation removes only proven
+  unreferenced files (US3-AS14);
+  stop
+endif
+@enduml

@@ -1,0 +1,400 @@
+@startuml class-domain
+title Class diagram: SplitSmart domain model (packages com.splitsmart.domain and com.splitsmart.domain.rules)\nFR-001, FR-005 to FR-020, FR-021 to FR-023, FR-025 to FR-029, FR-031 to FR-042, FR-047 to FR-049; NFR-001, NFR-002, NFR-006
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam nodesep 40
+skinparam ranksep 45
+skinparam defaultFontSize 12
+hide empty members
+
+package "com.splitsmart.domain (entities and value objects; no Swing, JDBC or adapter imports)" as domain {
+
+  class User <<FR-001, FR-005>> {
+    - id : UUID
+    - email : String
+    - emailNormalized : String {unique}
+    - displayName : String
+    - passwordHash : String {PBKDF2 text, never the password}
+    - createdAt : Instant
+  }
+
+  class Group <<FR-007 to FR-011, FR-049>> {
+    - id : UUID
+    - name : String
+    - state : GroupState
+    - originalCreatorId : UUID {never changes}
+    - currentCreatorId : UUID [0..1] {null only when ARCHIVED}
+    - createdAt : Instant
+    - archivedAt : Instant [0..1]
+    + isCurrentCreator(userId : UUID) : boolean
+    + rename(actorId : UUID, name : String) : void
+    + successorAfter(departingId : UUID, active : List<Membership>) : Optional<UUID>
+      {earliest joinedAt, then ascending user UUID}
+    + archive(at : Instant) : void
+  }
+
+  class Membership <<FR-004, FR-010, FR-049>> {
+    - id : UUID
+    - groupId : UUID
+    - userId : UUID
+    - joinedAt : Instant
+    - addedById : UUID
+    - leftAt : Instant [0..1]
+    - departureEventId : UUID [0..1]
+    + isActive() : boolean
+    + end(event : LifecycleEvent) : void
+  }
+
+  class Expense <<FR-012 to FR-020, FR-025 to FR-029, FR-047, FR-048>> {
+    - id : UUID
+    - groupId : UUID
+    - creatorId : UUID
+    - payerId : UUID
+    - amount : Money {0.01 to 100,000.00}
+    - expenseDate : LocalDate
+    - description : String
+    - splitMethod : SplitMethod
+    - status : ExpenseStatus
+    - receipt : ReceiptRef [0..1]
+    - createdAt : Instant
+    - cancellationEventId : UUID [0..1]
+    + approvers() : Set<UUID>
+    + recordDecision(d : ApprovalDecision, policy : ApprovalPolicy) : ExpenseStatus
+    + cancel(event : LifecycleEvent) : void
+    + isTerminal() : boolean
+  }
+
+  class Share <<FR-013 to FR-015, FR-020>> {
+    - participantId : UUID
+    - position : int {listed order}
+    - percentage : Percentage [0..1]
+    - amount : Money {may be 0.00}
+  }
+
+  class ApprovalDecision <<FR-026 to FR-029>> {
+    - expenseId : UUID
+    - approverId : UUID
+    - decision : Decision
+    - reason : String [0..1] {required for REJECTED}
+    - decidedAt : Instant
+  }
+
+  class ReceiptRef <<FR-017>> {
+    - storageKey : UUID {generated}
+    - contentType : String {image/jpeg or image/png}
+    - sizeBytes : long {1 to 5,000,000}
+    - storedAt : Instant
+  }
+
+  class Payment <<FR-035 to FR-038, FR-049>> {
+    - id : UUID
+    - groupId : UUID
+    - fromUserId : UUID {the recorder}
+    - toUserId : UUID
+    - recordedById : UUID
+    - recordedAt : Instant
+    - amount : Money {0.01 to 100,000.00}
+    - paymentDate : LocalDate
+    - note : String [0..1]
+    - status : PaymentStatus
+    - decidedById : UUID [0..1]
+    - decidedAt : Instant [0..1]
+    - decisionReason : String [0..1]
+    - cancellationEventId : UUID [0..1]
+    + confirm(actorId : UUID, liveDebt : Money, at : Instant) : void
+    + decline(actorId : UUID, reason : String, at : Instant) : void
+    + cancel(event : LifecycleEvent) : void
+  }
+
+  class Notification <<FR-021 to FR-023>> {
+    - id : UUID
+    - recipientId : UUID
+    - groupId : UUID
+    - actorId : UUID
+    - type : NotificationType
+    - expenseId : UUID [0..1]
+    - paymentId : UUID [0..1]
+    - lifecycleEventId : UUID [0..1]
+    - message : String
+    - read : boolean
+    - createdAt : Instant
+    + markRead(actorId : UUID) : void
+  }
+
+  class LifecycleEvent <<FR-029, FR-038, FR-049>> {
+    - id : UUID
+    - groupId : UUID
+    - eventType : LifecycleEventType
+    - actorId : UUID {initiating actor}
+    - subjectUserId : UUID
+    - expenseId : UUID [0..1]
+    - paymentId : UUID [0..1]
+    - successorId : UUID [0..1]
+    - causeEventId : UUID [0..1]
+    - reason : String
+    - occurredAt : Instant
+    - operationId : UUID
+  }
+
+  class Money <<value object, NFR-001>> {
+    - value : BigDecimal {scale 2}
+    + {static} ZERO : Money
+    + {static} parse(text : String) : Money
+    + plus(m : Money) : Money
+    + minus(m : Money) : Money
+    + negate() : Money
+    + signum() : int
+    + toPlainString() : String
+  }
+
+  class Percentage <<value object, FR-015>> {
+    - value : BigDecimal {scale 2, > 0}
+    + {static} parse(text : String) : Percentage
+    + applyTo(amount : Money) : Money {RoundingMode.DOWN}
+  }
+}
+
+package "com.splitsmart.domain (enumerations)" as enums {
+  enum GroupState {
+    ACTIVE
+    ARCHIVED
+  }
+  enum SplitMethod {
+    EQUAL
+    PERCENTAGE
+  }
+  enum ExpenseStatus {
+    PENDING
+    APPROVED
+    REJECTED
+    CANCELLED
+  }
+  enum Decision {
+    APPROVED
+    REJECTED
+  }
+  enum PaymentStatus {
+    AWAITING_CONFIRMATION
+    CONFIRMED
+    DECLINED
+    CANCELLED
+  }
+  enum NotificationType {
+    EXPENSE_RECORDED
+    EXPENSE_APPROVED
+    EXPENSE_REJECTED
+    EXPENSE_CANCELLED
+    PAYMENT_RECORDED
+    PAYMENT_CANCELLED
+  }
+  enum LifecycleEventType {
+    MEMBER_REMOVED
+    MEMBER_LEFT
+    EXPENSE_CANCELLED
+    PAYMENT_CANCELLED
+    CREATOR_SUCCEEDED
+    GROUP_ARCHIVED
+  }
+}
+
+package "com.splitsmart.domain (derived read types; never stored)" as derived {
+  class PairBalance <<derived, FR-011, FR-031, FR-033, FR-034>> {
+    - groupId : UUID
+    - memberId : UUID
+    - counterpartyId : UUID
+    - counterpartyDisplayName : String
+    - amount : Money {signed: + memberId owes}
+    - direction : BalanceDirection
+  }
+  class CounterpartyBalance <<derived, FR-032, FR-033>> {
+    - counterpartyId : UUID
+    - counterpartyDisplayName : String
+    - byGroup : List<GroupContribution>
+    - total : Money {signed, = sum(byGroup)}
+    - direction : BalanceDirection
+  }
+  class NetPosition <<derived, FR-032>> {
+    - amount : Money {signed, = sum(totals)}
+    - direction : BalanceDirection
+  }
+  enum BalanceDirection {
+    OWES
+    IS_OWED
+    SETTLED
+  }
+  class GroupContribution <<derived, FR-032>> {
+    - groupId : UUID
+    - groupName : String
+    - amount : Money {signed}
+  }
+  class PaymentAllowance <<derived, FR-037>> {
+    - groupId : UUID
+    - payerId : UUID
+    - receiverId : UUID
+    - debt : Money
+    - reserved : Money
+    - available : Money
+  }
+  class ExpenseSummary <<derived, FR-048>> {
+    - id : UUID
+    - groupId : UUID
+    - expenseDate : LocalDate
+    - description : String
+    - payerId : UUID
+    - payerDisplayName : String
+    - amount : Money
+    - status : ExpenseStatus
+    - createdAt : Instant
+  }
+  class ExpenseDetails <<derived, FR-017, FR-029>> {
+    - summary : ExpenseSummary
+    - shares : List<ShareView>
+    - decisions : List<DecisionView>
+    - lifecycleEvents : List<LifecycleEventView>
+    - receiptState : ReceiptState
+    - canDecide : boolean
+    - canDelete : boolean
+  }
+  enum ReceiptState {
+    NONE
+    ATTACHED
+    UNAVAILABLE
+  }
+  class ReportQuery <<FR-040, FR-041>> {
+    - from : LocalDate
+    - to : LocalDate {from <= to, inclusive}
+    - groupId : UUID [0..1]
+    - itemType : ReportItemType
+  }
+  enum ReportItemType {
+    EXPENSES
+    PAYMENTS
+    BOTH
+  }
+  class Report <<derived, FR-040 to FR-042>> {
+    - query : ReportQuery
+    - rows : List<ReportRow>
+    - expenseAmountTotal : Money
+    - myShareTotal : Money
+    - sentTotal : Money
+    - receivedTotal : Money
+  }
+  class ReportRow <<derived>> {
+    - kind : ReportItemType
+    - itemId : UUID
+    - groupId : UUID
+    - date : LocalDate
+    - status : String
+    - amount : Money
+    - myShare : Money [0..1]
+  }
+  class Summary <<derived, FR-039>> {
+    - approvedShareTotal : Money
+    - paidTotal : Money
+    - receivedTotal : Money
+    - netPosition : NetPosition
+  }
+}
+
+package "com.splitsmart.domain.rules (pure business rules)" as rules {
+  class SplitCalculator <<FR-014, FR-015, FR-019, NFR-001>> {
+    + equal(amount : Money, ordered : List<UUID>) : List<Share>
+    + byPercentage(amount : Money, ordered : LinkedHashMap<UUID, Percentage>) : List<Share>
+  }
+  class ApprovalPolicy <<FR-026 to FR-028>> {
+    + approversOf(creatorId : UUID, payerId : UUID, participants : List<UUID>) : Set<UUID>
+    + canDecide(e : Expense, actorId : UUID, activeMember : boolean) : boolean
+    + outcome(approvers : Set<UUID>, decisions : List<ApprovalDecision>) : ExpenseStatus
+  }
+  class BalanceCalculator <<FR-031 to FR-034, FR-037, FR-011>> {
+    + pairBalances(groupId : UUID, approved : List<Expense>, confirmed : List<Payment>) : List<PairBalance>
+    + counterparties(viewerId : UUID, pairs : List<PairBalance>) : List<CounterpartyBalance>
+    + overall(rows : List<CounterpartyBalance>) : NetPosition
+    + allowance(liveDebt : Money, awaiting : List<Payment>) : PaymentAllowance
+    + outstandingFor(memberId : UUID, pairs : List<PairBalance>) : List<PairBalance>
+  }
+  class AmountRules <<FR-016, FR-037>> {
+    + {static} MIN : Money = 0.01
+    + {static} MAX : Money = 100000.00
+    + parseInput(field : String, text : String) : Money
+  }
+  class PasswordPolicy <<FR-001>> {
+    + validate(password : char[]) : void
+  }
+}
+
+' Associations and cardinalities
+User "1" -- "0..*" Membership : member
+Group "1" *-- "1..*" Membership : historical memberships
+Group "0..*" --> "1" User : original creator
+Group "0..*" --> "0..1" User : current creator
+Group "1" o-- "0..*" Expense
+Group "1" o-- "0..*" Payment
+Group "1" o-- "0..*" LifecycleEvent
+Expense "0..*" --> "1" User : creator
+Expense "0..*" --> "1" User : payer
+Expense "1" *-- "1..*" Share : {ordered by position}
+Share "0..*" --> "1" User : participant
+Expense "1" *-- "0..*" ApprovalDecision : genuine decisions
+Expense "1" *-- "0..1" ReceiptRef
+Expense "0..1" --> "0..1" LifecycleEvent : cancelled by
+Payment "0..1" --> "0..1" LifecycleEvent : cancelled by
+Notification "0..*" --> "1" User : recipient
+
+CounterpartyBalance "1" *-- "1..*" GroupContribution
+BalanceCalculator ..> NetPosition : derives
+Report "1" *-- "0..*" ReportRow
+Report ..> ReportQuery
+
+SplitCalculator ..> Share : creates
+ApprovalPolicy ..> Expense
+BalanceCalculator ..> Expense : reads APPROVED shares only
+BalanceCalculator ..> Payment : reads CONFIRMED only;\nAWAITING only for allowance
+BalanceCalculator ..> PairBalance : derives
+BalanceCalculator ..> CounterpartyBalance : derives
+BalanceCalculator ..> PaymentAllowance : derives
+
+' Layout only: rules stacked in a column, derived types in two rows, enumerations below them
+SplitCalculator -[hidden]down- ApprovalPolicy
+ApprovalPolicy -[hidden]down- AmountRules
+AmountRules -[hidden]down- PasswordPolicy
+PasswordPolicy -[hidden]down- BalanceCalculator
+PairBalance -[hidden]down- Summary
+ExpenseSummary -[hidden]down- ExpenseDetails
+PaymentAllowance -[hidden]down- ReceiptState
+ReportRow -[hidden]down- GroupState
+GroupContribution -[hidden]down- NotificationType
+
+note as N1
+  Balances are DERIVED on every read from
+  APPROVED expense shares and CONFIRMED payments
+  (FR-031). PENDING, REJECTED and CANCELLED expenses,
+  and AWAITING, DECLINED and CANCELLED payments,
+  never change a balance (FR-025, FR-036).
+  No balance or posting table exists.
+end note
+
+note as N2
+  Invariants (NFR-001, FR-034):
+  sum(shares) = expense amount;
+  sum of signed positions per group = 0.00;
+  overall position = sum of counterparty totals.
+  ACTIVE group: exactly one current creator, an active member.
+  ARCHIVED group: no active member, no current creator (FR-049).
+  APPROVED and CONFIRMED records are immutable (FR-047).
+end note
+
+note as N3
+  PaymentAllowance (FR-037, D-3):
+  debt = max(0.00, live pair debt in the group)
+  reserved = sum(AWAITING amounts, same direction and group)
+  available = max(0.00, debt - reserved)
+  Confirmation rechecks debt only, without
+  subtracting its own reservation.
+end note
+
+N1 .. BalanceCalculator
+N3 .. PaymentAllowance
+N2 .. Group
+@enduml

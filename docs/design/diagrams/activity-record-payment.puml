@@ -1,0 +1,129 @@
+@startuml activity-record-payment
+title Activity: record, confirm, decline or cancel a payment\nFR-004, FR-016, FR-021, FR-022, FR-031, FR-034 to FR-038, FR-049; NFR-001, NFR-002, NFR-005, NFR-006, NFR-010, NFR-011\nScenarios US6-AS1 to US6-AS9, US2-AS9
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #333333
+
+|Paying member|
+start
+:Open the payment form in group G
+and choose the receiving member;
+|PaymentService|
+:allowance(session, G, receiver) on a worker:
+debt = max(0.00, live pair debt in G from APPROVED shares
+and CONFIRMED payments), reserved = sum of AWAITING
+payments payer to receiver in G, available =
+max(0.00, debt - reserved) (FR-037, D-3);
+|Paying member|
+:See confirmed debt, reserved and available
+shown separately (US6-AS7);
+:Enter amount as decimal text, date, optional note;
+|PaymentService|
+:CommandRunner: lock group G, open one UnitOfWork,
+replay check on the operation ID (NFR-010);
+if (Payer = session member, payer and receiver both\nactive members of G and distinct? (FR-035, FR-004)) then (no)
+  |Paying member|
+  :Refused: a payment cannot be recorded
+  for another payer or a nonmember (US6-AS9);
+  stop
+else (yes)
+endif
+|PaymentService|
+if (Amount 0.01 to 100,000.00 with two decimals\nand date present? (FR-016, FR-037)) then (no)
+  |Paying member|
+  :Field message naming the problem,
+  other entries kept (US6-AS3, NFR-005);
+  stop
+else (yes)
+endif
+|PaymentService|
+:Recompute available inside the lock;
+if (Amount <= available in this group\nand direction?) then (no)
+  |Paying member|
+  :Refused, showing debt, reserved and available.
+  Other groups and the opposite direction never
+  add allowance (US6-AS3, US6-AS7, US6-AS9);
+  stop
+else (yes)
+endif
+|PaymentService|
+:Insert Payment AWAITING_CONFIRMATION (recorder,
+recorded time), PAYMENT_RECORDED notification to the
+receiver and the operation result; commit together
+(FR-036, FR-021, US6-AS4);
+note right
+  The reservation is the AWAITING row itself:
+  no reservation table and no balance change.
+  Commit failure: NOT_COMMITTED, input kept.
+  Uncertain commit: UNKNOWN, look up the
+  operation ID before any retry (US1-AS9).
+end note
+|Receiving member|
+:Open the payment from the inbox or
+payment history (FR-023, FR-038);
+:Choose Confirm or Decline;
+|PaymentService|
+:CommandRunner: lock group G (the same group lock used by
+expense approval and departures), open one UnitOfWork;
+if (Actor is the receiver and an active member?) then (no)
+  |Receiving member|
+  :Refused, nothing changes (FR-036, US6-AS9);
+  stop
+else (yes)
+endif
+|PaymentService|
+if (Status is AWAITING_CONFIRMATION?) then (no: terminal)
+  |Receiving member|
+  :Refused: CONFIRMED, DECLINED and CANCELLED
+  are terminal, a payment is never applied twice
+  (FR-036, US6-AS9);
+  stop
+else (yes)
+endif
+|PaymentService|
+if (Decision?) then (confirm)
+  :Re-read the live debt payer to receiver in G,
+  without subtracting this payment's own reservation
+  (FR-037, D-3);
+  if (Amount <= live debt?) then (no)
+    |Receiving member|
+    :Refused with the current debt. Status stays
+    AWAITING_CONFIRMATION, balances unchanged.
+    The receiver may decline it instead. Covers debt
+    shrinking, reaching zero or reversing (US6-AS8);
+    stop
+  else (yes)
+  endif
+  |PaymentService|
+  :Set CONFIRMED with decision actor and Clock time,
+  release its reservation, save the operation result,
+  commit (FR-036, US6-AS1, US6-AS2);
+  |Paying member|
+  :Derived balance falls by the amount; shown as
+  settled at 0.00 (FR-031, FR-034, SC-006);
+  stop
+else (decline)
+  |PaymentService|
+  :Set DECLINED with decision actor, time and optional
+  reason; reservation released; save the operation
+  result and commit (FR-036, US6-AS5);
+  |Paying member|
+  :Balance unchanged; DECLINED shown in
+  payment history (FR-038);
+  stop
+endif
+
+|PaymentService|
+start
+:Third terminal path, started by a permitted departure of the
+payer or the receiver from G (activity-remove-member, FR-049);
+:In the departure transaction, each AWAITING payment between them
+becomes CANCELLED with a separate lifecycle event (actor, reason,
+time). Its reservation is released, no balance changes, and the remaining
+party is notified unless they initiated it (FR-021, US2-AS9);
+|Paying member|
+:History shows CANCELLED with the lifecycle reason,
+never as the receiver's decision (FR-038, US6-AS6);
+stop
+@enduml

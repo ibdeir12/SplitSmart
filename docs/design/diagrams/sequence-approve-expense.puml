@@ -1,0 +1,113 @@
+@startuml sequence-approve-expense
+title Sequence: approve an expense (US4-AS2, US4-AS3, US4-AS10)\nFR-004, FR-021, FR-022, FR-025 to FR-029, FR-031, FR-034, FR-047; NFR-001, NFR-002, NFR-005, NFR-006, NFR-010, NFR-011
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+autonumber
+
+actor "Approver" as A
+box "ui (Swing)" #FFFFFF
+participant "ExpenseDetailsPanel /\nApprovalController\n[EDT]" as C
+participant "SessionWorker\n[background thread]" as W
+end box
+box "service" #FFFFFF
+participant "ApprovalService" as S
+participant "CommandRunner" as R
+participant "GroupLocks" as L
+participant "NotificationService\n(internal writer)" as N
+participant "BalanceService" as B
+end box
+box "service.port (implemented by persistence)" #FFFFFF
+participant "TransactionRunner" as T
+participant "UnitOfWork\n(shared repositories)" as U
+participant "Clock" as K
+end box
+box "domain.rules" #FFFFFF
+participant "ApprovalPolicy" as P
+end box
+
+A -> C : click Approve
+C -> C : opId = UUID.randomUUID();\ndisable buttons, show loading (NFR-011)
+C -> W : execute(session token, opId)
+W -> S : approve(session, opId, expenseId)
+S -> R : run(session, opId, groupId, fingerprint, work)
+R -> L : lockFor(groupId).lock()
+R -> T : inTransaction(work)
+activate T
+T -> U : begin (one connection, auto-commit off)
+R -> U : operationRecords().find(actorId, opId)
+alt operation already recorded with the same fingerprint
+  U --> R : prior result
+  R -> U : recheck current access
+  R --> S : prior CommandResult (no second decision or notification)
+else new operation
+  S -> U : groups().activeMemberships(groupId)
+  S -> U : expenses().find(expenseId) with shares and decisions
+  alt actor is not an active member (FR-004, NFR-002)
+    S --> R : throw AccessDeniedException
+  else expense is not PENDING: APPROVED, REJECTED or CANCELLED (FR-047, US4-AS9)
+    S --> R : throw ConflictException (terminal state, nothing changes)
+  else ApprovalPolicy.canDecide is false: not an approver, creator, or duplicate (FR-026, US4-AS4, US4-AS10)
+    S -> P : canDecide(expense, actorId, activeMember)
+    P --> S : false
+    S --> R : throw AccessDeniedException or ConflictException
+  else required approver who has not decided
+    S -> P : canDecide(expense, actorId, true)
+    P --> S : true
+    S -> K : instant()
+    K --> S : now
+    S -> U : expenses().saveDecision(APPROVED, actorId, now) (FR-029)
+    S -> P : outcome(approvers, decisions + this one)
+    alt every approver approved (US4-AS2 second approval)
+      P --> S : APPROVED
+      S -> U : expenses().save(status APPROVED) (FR-027, FR-047)
+      S -> N : notifyDecision(unitOfWork, expense)
+      N -> U : notifications().save(EXPENSE_APPROVED to creator) (FR-021)
+      note right of N
+        Joins the caller's UnitOfWork;
+        never opens or commits its own.
+        The creator is never an approver,
+        so FR-022 suppresses nothing here.
+      end note
+    else others still undecided (US4-AS2 first approval)
+      P --> S : PENDING
+      note right of S : status stays PENDING;\nno outcome notification
+    end
+    S -> U : operationRecords().save(actorId, opId, fingerprint, COMMITTED)
+  end
+end
+alt work completed normally
+  T -> U : commit
+  U --> T : committed
+  T --> R : result
+  deactivate T
+  R -> L : unlock()
+  R --> S : CommandResult(opId, COMMITTED, ExpenseDetails)
+  S --> W : CommandResult
+  W -> C : done(): session token still current?
+  C -> W : refresh on a worker
+  W -> B : myBalances(session, groupId)
+  B -> U : approvedInGroup, confirmedInGroup (read-only)
+  B --> W : List<PairBalance> derived by BalanceCalculator (FR-031, FR-034)
+  W -> C : render status, decision history and balances
+else any exception before commit (US4-AS10)
+  T -> U : rollback
+  T --> R : exception
+  R -> L : unlock()
+  R --> S : AppException with outcome NOT_COMMITTED
+  S --> W : AppException
+  W -> C : show safe message, re-enable buttons (NFR-005, NFR-010)
+else commit outcome cannot be determined
+  T --> R : uncertain commit
+  R -> L : unlock()
+  R --> W : OutcomeUnknownException (UNKNOWN)
+  W -> C : show unknown; disable decision;\noffer status lookup by opId (US1-AS9)
+end
+note over S, U
+  No balance row is written and no posting is made: once APPROVED,
+  the expense's retained shares take part in later derivation (FR-025, FR-031).
+  Reject follows the same path with a required reason; any one rejection
+  sets REJECTED at once and notifies the creator with the reason (FR-028, US4-AS3).
+end note
+@enduml

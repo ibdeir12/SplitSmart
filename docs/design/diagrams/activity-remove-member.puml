@@ -1,0 +1,105 @@
+@startuml activity-remove-member
+title Activity: remove a member or leave a group (departure, cleanup, creator succession)\nFR-004, FR-007 to FR-011, FR-021, FR-023, FR-025, FR-026, FR-029, FR-031, FR-034, FR-036, FR-038, FR-049; NFR-001, NFR-002, NFR-006, NFR-010, NFR-011\nScenarios US2-AS3, US2-AS5, US2-AS6, US2-AS8 to US2-AS12
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #333333
+
+|Actor (current creator or leaving member)|
+start
+if (Action?) then (remove member M)
+  :Current Group Creator chooses
+  Remove for member M (FR-008);
+else (leave)
+  :Member chooses Leave; M = the actor.
+  Removing oneself follows this path (FR-008);
+endif
+|Swing UI|
+:Explain that pending work involving M will be cancelled
+and, if M is the current creator, who succeeds,
+allocate operation UUID, show loading (NFR-011);
+|GroupService|
+:CommandRunner: lock group G, open one UnitOfWork,
+replay check on the operation ID (NFR-010);
+if (Remove: actor is the current creator\n(including a successor) and M is active?\nLeave: actor is an active member?) then (no)
+  |Swing UI|
+  :Refused, nothing changes
+  (FR-008, US2-AS5, NFR-002);
+  stop
+else (yes)
+endif
+|GroupService|
+:BalanceCalculator.pairBalances for G from APPROVED
+shares and CONFIRMED payments; outstandingFor(M);
+if (Every pairwise balance of M in G = 0.00?) then (no)
+  |Swing UI|
+  :Refused, listing each outstanding counterparty
+  and amount. A net 0.00 made of opposite debts
+  to different people is still refused
+  (FR-011, US2-AS3);
+  stop
+else (yes: settled for departure)
+endif
+|UnitOfWork (H2)|
+:Cancel each PENDING expense in G where M is creator,
+payer, participant or required approver: status CANCELLED,
+shares and genuine decisions kept, EXPENSE_CANCELLED
+lifecycle event with actor, reason and Clock time
+(FR-025, FR-026, FR-029, US2-AS8);
+note left
+  Pending work alone never causes a refusal
+  (FR-011, US2-AS6). APPROVED expenses and
+  CONFIRMED payments are never cancelled.
+end note
+:Cancel each AWAITING_CONFIRMATION payment M sends or
+receives in G: status CANCELLED, PAYMENT_CANCELLED event,
+its reservation released (FR-036, FR-038, US2-AS9);
+:Notify affected expense creators and payment parties who
+remain active members, excluding the initiating actor
+(EXPENSE_CANCELLED, PAYMENT_CANCELLED; FR-021);
+:End M's membership (leftAt, endedBy) and append
+MEMBER_REMOVED or MEMBER_LEFT (FR-049);
+|GroupService|
+if (Was M the current Group Creator?) then (yes)
+  if (Any active member remains?) then (yes)
+    |UnitOfWork (H2)|
+    :currentCreatorId = remaining active member with the
+    earliest current joinedAt, ties by ascending user UUID,
+    originalCreatorId unchanged; CREATOR_SUCCEEDED event
+    (FR-007, FR-009, US2-AS10);
+  else (no: M was the last member)
+    |UnitOfWork (H2)|
+    :Archive G: state ARCHIVED, currentCreatorId null,
+    GROUP_ARCHIVED event, history retained,
+    no further member operations (US2-AS11);
+  endif
+else (no)
+endif
+|UnitOfWork (H2)|
+:Save the operation result; commit everything together.
+No user, expense, share, decision, payment or referenced
+receipt is deleted (FR-049);
+if (Commit result?) then (committed)
+  |Swing UI|
+  :Show DepartureResult: cancelled expenses and
+  payments, successor or archived (FR-049);
+  :M loses every group access path: lists, details,
+  receipts, reports, old notification links (FR-004,
+  FR-010, FR-023, US7-AS8). M receives only a minimal
+  saved acknowledgement. Confirmed balances unchanged
+  (FR-031, FR-034, US2-AS6);
+  stop
+elseif (Commit result?) then (failed)
+  |Swing UI|
+  :Any database or notification write failed: departure,
+  cancellations, reservations, role change and notifications
+  all roll back, access is as before, NOT_COMMITTED
+  (US2-AS12, NFR-010);
+  stop
+else (uncertain)
+  |Swing UI|
+  :Outcome UNKNOWN; look up the operation ID
+  before any retry (US1-AS9);
+  stop
+endif
+@enduml

@@ -1,0 +1,74 @@
+@startuml deployment
+title Deployment diagram: local desktop MVP (no hosted node)\nFR-005, FR-006, FR-017; NFR-002, NFR-006, NFR-010; FR-044 to FR-046 shown only as deferred context
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam nodesep 50
+skinparam ranksep 50
+left to right direction
+
+actor "Member\n(one signed-in session at a time)" as Member
+
+node "Member computer (Windows, macOS or Linux)" as PC {
+  node "Java 21 runtime (JVM)" as JVM {
+    artifact "splitsmart.jar\n(executable JAR, one Maven module;\nH2 driver bundled)" as Jar
+    artifact "db/migration/V001~_~_initial.sql\n(ordered numbered scripts, inside the JAR)" as Scripts
+  }
+
+  folder "Selected data directory\n(--data-dir, default <U+007E>/.splitsmart)" as DataDir {
+    file "app.lock\nexclusive owner lock,\nheld for the process lifetime" as Lock
+    database "splitsmart.mv.db (H2 file)\naccounts (PBKDF2 hashes only), groups,\nexpenses, shares, decisions, payments,\nnotifications, lifecycle events,\noperation results, schema_version,\nin-progress migration marker" as H2
+    folder "receipts/\nfinal files named by generated UUID" as Receipts
+    folder "receipts/staging/\nvalidated bytes before finalize" as Staging
+    file "logs/\ntechnical causes only; no passwords,\nno receipt contents" as Logs
+  }
+
+  folder "Backup copy\n(whole data directory copied\nafter the application has exited)" as Backup
+  folder "Restore directory\n(separate --data-dir;\noriginal kept unchanged)" as Restore
+}
+
+Member --> Jar : Swing UI
+Jar --> Lock : 1. acquire before opening H2
+Jar --> H2 : 2. validate or migrate schema,\nthen JDBC (embedded, file mode)
+Jar ..> Scripts : reads
+Jar --> Staging : 3. stage receipt
+Staging --> Receipts : 4. atomic move on the same\nfile system, then DB reference commits
+Jar --> Logs
+DataDir ..> Backup : clean shutdown, then copy\n(also taken before any upgrade)
+Backup ..> Restore : copy into a new directory,\nopen with --data-dir, verify
+
+note right of Lock
+  Second instance: lock unavailable ->
+  refuse safely; never open the store.
+  Startup failure (unreadable directory or
+  database) shows a recovery message and
+  never replaces the store (US1-AS8, NFR-010).
+end note
+
+note right of H2
+  First launch: create a NEW empty directory, lock it,
+  apply V001. Reopen: validate version and checksum.
+  Upgrade: closed-store backup, durable in-progress
+  marker, run script, record version and checksum,
+  clear marker. A failed or interrupted migration
+  blocks startup; recover from the pre-upgrade backup.
+  Unknown future version or checksum mismatch: refuse
+  without overwriting (D-5).
+end note
+
+note right of Restore
+  Verify accounts, memberships, decisions,
+  lifecycle history, payment states, derived
+  balances, schema version and every referenced
+  receipt before adopting the restored copy
+  (NFR-006, US1-AS11).
+end note
+
+note as Deferred
+  DEFERRED, not delivered by this MVP:
+  web client (FR-044), Android app (FR-045),
+  iOS app (FR-046), web availability (NFR-008),
+  cross-client consistency (NFR-009).
+  A future release would add a server around
+  the same service layer; no hosted node exists here.
+end note
+@enduml

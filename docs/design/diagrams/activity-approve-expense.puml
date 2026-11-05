@@ -1,0 +1,112 @@
+@startuml activity-approve-expense
+title Activity: approve or reject a pending expense\nFR-004, FR-021, FR-022, FR-025 to FR-029, FR-031, FR-034, FR-047, FR-049; NFR-001, NFR-002, NFR-005, NFR-006, NFR-010, NFR-011\nScenarios US4-AS2, US4-AS3, US4-AS4, US4-AS9, US4-AS10
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #333333
+
+|Approver|
+start
+:Open the expense from the approvals inbox
+or from a notification (FR-023);
+:Choose Approve, or Reject with a reason;
+|Swing UI|
+if (Reject with a blank reason?) then (yes)
+  :Field message: a rejection reason is required,
+  entry kept (FR-028, NFR-005);
+  stop
+else (no)
+endif
+:Allocate operation UUID, disable both buttons,
+show loading, call approve or reject on a worker (NFR-011);
+|ApprovalService|
+:CommandRunner: lock the expense's group,
+open one UnitOfWork (D-2);
+if (Operation ID already recorded?) then (same request)
+  :Recheck access, return the prior result,
+  no second decision or notification (US4-AS10);
+  |Swing UI|
+  :Show the recorded outcome;
+  stop
+else (new)
+endif
+|UnitOfWork (H2)|
+:Load active membership, expense, approver set
+and genuine decisions;
+|ApprovalService|
+if (Actor is an active member of the group?) then (no)
+  |Swing UI|
+  :Access denied, no group content shown
+  (FR-004, NFR-002, US7-AS8);
+  stop
+else (yes)
+endif
+|ApprovalService|
+if (Expense status is PENDING?) then (no: APPROVED, REJECTED or CANCELLED)
+  |Swing UI|
+  :Conflict: the expense is already decided or was
+  cancelled by a lifecycle event. Nothing changes,
+  prior decisions and cancellation history stay
+  visible (FR-047, FR-049, US4-AS9, US4-AS10);
+  stop
+else (yes)
+endif
+|ApprovalService|
+if (ApprovalPolicy: actor is a required approver\nwho has not decided yet?) then (no)
+  |Swing UI|
+  :Refused: not an approver, the creator,
+  or a repeated decision (FR-026, US4-AS4);
+  stop
+else (yes)
+endif
+|ApprovalService|
+if (Decision?) then (reject)
+  :Outcome REJECTED at once, whatever the other
+  approvers did (FR-028, US4-AS3). Outcome notification:
+  EXPENSE_REJECTED with the reason, to the creator (FR-021);
+else (approve)
+  if (ApprovalPolicy.outcome with this approval:\nhave all approvers approved?) then (no)
+    :Outcome stays PENDING,
+    no outcome notification (US4-AS2);
+  else (yes)
+    :Outcome APPROVED, immutable from now on
+    (FR-027, FR-047). Outcome notification:
+    EXPENSE_APPROVED to the creator (FR-021);
+  endif
+endif
+|UnitOfWork (H2)|
+:In the same UnitOfWork insert the genuine ApprovalDecision
+(actor, Clock time, reason when rejected; FR-029),
+the status change and outcome notification if any,
+and the operation result COMMITTED;
+:Commit all of them together (D-2);
+note right
+  No balance row and no posting is written.
+  Balances are derived later from APPROVED shares.
+  FR-022: the creator is never an approver, so an
+  outcome notification is always caused by another
+  member and is never suppressed.
+end note
+if (Commit result?) then (committed)
+  |Swing UI|
+  :Show the new status and decision history
+  (actor and time; lifecycle events listed
+  separately, FR-029);
+  :Refresh balances on a worker: BalanceService
+  derives pair balances from APPROVED shares and
+  CONFIRMED payments; group sum = 0.00
+  (FR-031, FR-034, NFR-001);
+  stop
+elseif (Commit result?) then (failed)
+  |Swing UI|
+  :Rolled back: no decision, status or notification
+  saved, NOT_COMMITTED; buttons re-enabled
+  (US4-AS10, NFR-010);
+  stop
+else (uncertain)
+  |Swing UI|
+  :Outcome UNKNOWN; look up the operation ID
+  before any retry (US1-AS9, NFR-010);
+  stop
+endif
+@enduml

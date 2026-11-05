@@ -1,0 +1,320 @@
+@startuml class-services-ports
+title Class diagram: application services, ports and adapters (one Maven module, packages under com.splitsmart)\nAll MVP FRs: FR-001 to FR-023, FR-025 to FR-029, FR-031 to FR-042, FR-047 to FR-049; NFR-001 to NFR-007, NFR-010, NFR-011
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam nodesep 35
+skinparam ranksep 60
+skinparam defaultFontSize 12
+hide empty members
+
+package "com.splitsmart.ui (Swing; presentation only)" as ui {
+  class "Views\n(MainFrame, *Panel, *Dialog)" as Views <<Swing>>
+  class "Controllers\n(*Controller)" as Controllers <<planned>> {
+    + allocate operation UUID per submission
+    + disable submit while running (NFR-011)
+    + keep form entries on any failure (NFR-005)
+  }
+  class "SessionWorker<T>" as SessionWorker <<planned, SwingWorker>> {
+    - sessionToken : UUID
+    # doInBackground() : T {off the EDT}
+    # done() : void {renders only if session token still current}
+  }
+}
+
+package "com.splitsmart.service (use cases; owns transactions, locks and access checks)" as service {
+  class AccountService <<FR-001 to FR-003, FR-005>> {
+    + register(email : String, displayName : String, password : char[]) : User
+    + signIn(email : String, password : char[]) : Session
+    + signOut(s : Session) : void
+  }
+  class GroupService <<FR-004, FR-007 to FR-011, FR-049>> {
+    + createGroup(s, opId : UUID, name : String) : CommandResult<Group>
+    + addMember(s, opId : UUID, groupId : UUID, email : String) : CommandResult<Void>
+    + removeMember(s, opId : UUID, groupId : UUID, userId : UUID) : CommandResult<DepartureResult>
+    + leaveGroup(s, opId : UUID, groupId : UUID) : CommandResult<DepartureResult>
+    + previewDeparture(s, groupId : UUID, userId : UUID) : DeparturePreview
+    + renameGroup(s, opId : UUID, groupId : UUID, name : String) : CommandResult<Void>
+    + myGroups(s) : List<Group>
+    + members(s, groupId : UUID) : List<MemberView> {active only}
+    + membershipHistory(s, groupId : UUID) : List<MembershipHistoryView>
+  }
+  class ExpenseService <<FR-004, FR-012 to FR-020, FR-025, FR-026, FR-047, FR-048>> {
+    + previewShares(s, d : ExpenseDraft) : List<ShareView>
+    + recordExpense(s, opId : UUID, d : ExpenseDraft) : CommandResult<ExpenseDetails>
+    + listExpenses(s, groupId : UUID) : List<ExpenseSummary>
+    + getExpense(s, expenseId : UUID) : ExpenseDetails
+    + getReceipt(s, expenseId : UUID) : ReceiptView {NONE, ATTACHED or UNAVAILABLE}
+    + deleteExpense(s, opId : UUID, expenseId : UUID) : CommandResult<Void> {PENDING and creator only}
+  }
+  class ApprovalService <<FR-026 to FR-029, FR-047>> {
+    + awaitingMyDecision(s) : List<ExpenseSummary>
+    + approve(s, opId : UUID, expenseId : UUID) : CommandResult<ExpenseDetails>
+    + reject(s, opId : UUID, expenseId : UUID, reason : String) : CommandResult<ExpenseDetails>
+  }
+  class PaymentService <<FR-035 to FR-038>> {
+    + allowance(s, groupId : UUID, toUserId : UUID) : PaymentAllowance
+    + recordPayment(s, opId : UUID, d : PaymentDraft) : CommandResult<PaymentView>
+    + confirm(s, opId : UUID, paymentId : UUID) : CommandResult<PaymentView>
+    + decline(s, opId : UUID, paymentId : UUID, reason : String [0..1]) : CommandResult<PaymentView>
+    + history(s) : List<PaymentView>
+    + history(s, groupId : UUID) : List<PaymentView>
+  }
+  class BalanceService <<FR-031 to FR-034>> {
+    + myBalances(s, groupId : UUID) : List<PairBalance>
+    + myCounterpartyBalances(s) : List<CounterpartyBalance>
+    + myOverallPosition(s) : NetPosition
+  }
+  class NotificationService <<FR-021 to FR-023>> {
+    + inbox(s) : List<Notification>
+    + unreadCount(s) : int
+    + markRead(s, notificationId : UUID) : void
+    + open(s, notificationId : UUID) : NotificationTarget
+    ~ notifyExpenseRecorded(u : UnitOfWork, e : Expense) : void
+    ~ notifyDecision(u : UnitOfWork, e : Expense) : void
+    ~ notifyPaymentRecorded(u : UnitOfWork, p : Payment) : void
+    ~ notifyCancelled(u : UnitOfWork, events : List<LifecycleEvent>) : void
+  }
+  class ReportService <<FR-039 to FR-042>> {
+    + summary(s) : Summary
+    + customReport(s, q : ReportQuery) : Report
+  }
+  class Session <<FR-003, FR-004>> {
+    - userId : UUID
+    - displayName : String
+    - token : UUID
+    - signedInAt : Instant
+  }
+  class CommandRunner <<planned, D-2, NFR-010>> {
+    + run(s, opId : UUID, groupId : UUID [0..1], fingerprint : String, work : Function<UnitOfWork, T>) : CommandResult<T>
+    + lookup(s, opId : UUID) : CommandResult<?>
+  }
+  class GroupLocks <<planned, serialization>> {
+    + lockFor(groupId : UUID) : ReentrantLock
+  }
+  class "CommandResult<T>" as CommandResult {
+    - operationId : UUID
+    - outcome : OperationOutcome
+    - value : T [0..1]
+  }
+  enum OperationOutcome {
+    NOT_COMMITTED
+    COMMITTED
+    UNKNOWN
+  }
+  class DepartureResult <<FR-049>> {
+    - operationId : UUID
+    - cancelledExpenseIds : List<UUID>
+    - cancelledPaymentIds : List<UUID>
+    - successorId : UUID [0..1]
+    - archived : boolean
+  }
+  class "ExpenseDraft / PaymentDraft" as Drafts <<D-4>> {
+    amounts and percentages as decimal String
+    ordered participants, optional receipt file
+  }
+  abstract class AppException <<NFR-005, NFR-010>> {
+    - safeMessage : String
+    - operationId : UUID [0..1]
+    - retryable : boolean
+    - outcome : OperationOutcome
+  }
+  class "ValidationException(field)\nAccessDeniedException\nConflictException\nStorageUnavailableException\nReceiptUnavailableException\nOutcomeUnknownException" as Errors
+}
+
+package "com.splitsmart.service.port (interfaces owned by the service layer)" as port {
+  interface TransactionRunner <<D-2>> {
+    + inTransaction(work : Function<UnitOfWork, T>) : T
+  }
+  interface UnitOfWork <<D-2>> {
+    + users() : UserRepository
+    + groups() : GroupRepository
+    + expenses() : ExpenseRepository
+    + payments() : PaymentRepository
+    + notifications() : NotificationRepository
+    + lifecycleEvents() : LifecycleEventRepository
+    + operationRecords() : OperationRecordRepository
+  }
+  interface UserRepository {
+    + findById(id) / findByEmail(email)
+    + save(u : User)
+  }
+  interface GroupRepository {
+    + find(id) / groupsOf(userId)
+    + activeMemberships(groupId)
+    + save(g : Group) / saveMembership(m)
+  }
+  interface ExpenseRepository {
+    + find(id) / listByGroup(groupId)
+    + approvedInGroup(groupId)
+    + pendingInvolving(groupId, userId)
+    + save(e : Expense) / saveDecision(d)
+  }
+  interface PaymentRepository {
+    + find(id) / confirmedInGroup(groupId)
+    + awaitingInGroup(groupId)
+    + historyFor(userId, groupId [0..1])
+    + save(p : Payment)
+  }
+  interface NotificationRepository {
+    + inboxFor(userId, accessibleGroupIds)
+    + save(n) / markRead(id)
+  }
+  interface LifecycleEventRepository {
+    + append(e : LifecycleEvent)
+    + forExpense(id) / forPayment(id)
+  }
+  interface OperationRecordRepository <<NFR-010>> {
+    + find(actorId, opId)
+    + save(record)
+  }
+  interface ReceiptStore <<FR-017>> {
+    + stage(content : InputStream, size : long) : StagedReceipt
+    + finalizeStaged(st : StagedReceipt) : ReceiptRef
+    + open(ref : ReceiptRef) : InputStream
+    + discard(storageKey : UUID) : void
+    + reconcile(referenced : Set<UUID>) : ReconcileReport
+  }
+  interface PasswordHasher <<FR-005>> {
+    + hash(password : char[]) : String
+    + matches(password : char[], stored : String) : boolean
+  }
+  class "java.time.Clock" as Clock <<injected>>
+}
+
+package "com.splitsmart.persistence (JDBC over embedded H2)" as persistence {
+  class JdbcTransactionRunner
+  class JdbcUnitOfWork {
+    - connection : Connection {auto-commit off}
+  }
+  class "JdbcUserRepository\nJdbcGroupRepository\nJdbcExpenseRepository\nJdbcPaymentRepository\nJdbcNotificationRepository\nJdbcLifecycleEventRepository\nJdbcOperationRecordRepository" as JdbcRepos
+  class Database <<D-5>> {
+    + open(dataDir : Path) : DataSource
+  }
+  class MigrationRunner <<D-5>> {
+    + migrate() : void {schema_version, V001~_~_initial.sql}
+  }
+}
+
+package "com.splitsmart.storage" as storage {
+  class FileReceiptStore {
+    - receiptsDir : Path
+    - stagingDir : Path
+  }
+}
+
+package "com.splitsmart.security" as security {
+  class Pbkdf2PasswordHasher {
+    PBKDF2WithHmacSHA256, salt, iterations
+  }
+}
+
+package "com.splitsmart.app" as app {
+  class AppContext <<manual wiring>> {
+    + {static} start(dataDir : Path) : AppContext
+    + shutdown() : void
+  }
+  class DataDirectoryLock <<planned>> {
+    + acquire(dataDir : Path) : DataDirectoryLock
+  }
+}
+
+' ui -> service (controllers call every public service method through SessionWorker)
+Views ..> Controllers
+Controllers ..> SessionWorker
+SessionWorker ..> AccountService
+SessionWorker ..> GroupService
+SessionWorker ..> ExpenseService
+SessionWorker ..> ApprovalService
+SessionWorker ..> PaymentService
+SessionWorker ..> BalanceService
+SessionWorker ..> NotificationService
+SessionWorker ..> ReportService
+
+' layout only: services in three rows, helpers below them
+AccountService -[hidden]down- ExpenseService
+GroupService -[hidden]down- ApprovalService
+BalanceService -[hidden]down- PaymentService
+ExpenseService -[hidden]down- NotificationService
+ApprovalService -[hidden]down- ReportService
+PaymentService -[hidden]down- Session
+NotificationService -[hidden]down- Drafts
+ReportService -[hidden]down- DepartureResult
+Session -[hidden]down- Errors
+
+' service internals
+GroupService ..> CommandRunner
+ExpenseService ..> CommandRunner
+ApprovalService ..> CommandRunner
+PaymentService ..> CommandRunner
+CommandRunner ..> GroupLocks
+CommandRunner ..> CommandResult
+CommandResult ..> OperationOutcome
+AppException ..> OperationOutcome
+AppException <|-- Errors
+ExpenseService ..> NotificationService : notifications join\nthe same UnitOfWork
+ApprovalService ..> NotificationService
+PaymentService ..> NotificationService
+GroupService ..> NotificationService
+
+' service -> ports
+CommandRunner ..> TransactionRunner : opens one unit of work
+TransactionRunner ..> UnitOfWork
+ExpenseService ..> ReceiptStore
+AccountService ..> PasswordHasher
+AccountService ..> Clock
+
+' layout only: ports band below the service band, adapters below ports
+GroupLocks -[hidden]down- TransactionRunner
+CommandResult -[hidden]down- ReceiptStore
+OperationOutcome -[hidden]down- PasswordHasher
+Errors -[hidden]down- Clock
+UnitOfWork -[hidden]down- UserRepository
+UnitOfWork -[hidden]down- GroupRepository
+UnitOfWork -[hidden]down- ExpenseRepository
+UnitOfWork -[hidden]down- PaymentRepository
+UnitOfWork -[hidden]down- NotificationRepository
+UnitOfWork -[hidden]down- LifecycleEventRepository
+UnitOfWork -[hidden]down- OperationRecordRepository
+
+' adapters realize ports
+TransactionRunner <|.. JdbcTransactionRunner
+UnitOfWork <|.. JdbcUnitOfWork
+UserRepository <|.. JdbcRepos
+GroupRepository <|.. JdbcRepos
+ExpenseRepository <|.. JdbcRepos
+PaymentRepository <|.. JdbcRepos
+NotificationRepository <|.. JdbcRepos
+LifecycleEventRepository <|.. JdbcRepos
+OperationRecordRepository <|.. JdbcRepos
+JdbcUnitOfWork *-- JdbcRepos : share one connection
+ReceiptStore <|.. FileReceiptStore
+PasswordHasher <|.. Pbkdf2PasswordHasher
+JdbcTransactionRunner ..> Database
+
+' wiring (AppContext is the only class naming concrete adapters)
+JdbcRepos -[hidden]down- AppContext
+AppContext ..> DataDirectoryLock : 1. acquire
+AppContext ..> MigrationRunner : 2. migrate
+AppContext ..> JdbcTransactionRunner : creates
+AppContext ..> FileReceiptStore : creates
+AppContext ..> Pbkdf2PasswordHasher : creates
+
+note left of CommandRunner
+  One top-level use case = one unit of work (D-2):
+  1. lock the group (GroupLocks) before opening it
+  2. find(actor, opId): same fingerprint -> return the
+     prior result after rechecking access; different -> ConflictException
+  3. run work; source rows, decisions, status, lifecycle
+     events, notifications and the operation result commit together
+  4. any exception -> rollback, NOT_COMMITTED;
+     commit outcome uncertain -> UNKNOWN (NFR-010)
+  Passwords are never fingerprinted or stored here.
+end note
+
+note top of port
+  Dependency rule: ui -> service -> domain; service -> service.port <- adapters
+  (persistence, storage, security). domain imports no Swing, JDBC or adapter class.
+  Only app.AppContext names concrete adapters. Time comes from the injected Clock.
+end note
+@enduml
