@@ -4,8 +4,39 @@ CIS 285 Software Engineering Tools.
 
 SplitSmart is an expense-sharing application for friends, roommates, family members, and
 coworkers. This repository holds its requirements (Lab 6) and its architecture and design
-(Lab 7), developed with the GitHub Spec Kit CLI (`specify`). No application code has been
-written yet.
+(Lab 7), developed with the GitHub Spec Kit CLI (`specify`), and its Docker development
+environment (Lab 8). No SplitSmart features have been implemented yet.
+
+## Lab 8: Development Environment
+
+| Item | Where |
+|------|-------|
+| Dev container | [`.devcontainer/Dockerfile`](.devcontainer/Dockerfile) and [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json): Node.js 22, Next.js 15, React, TypeScript, Tailwind CSS, Prisma 6 with SQLite, Vitest |
+| Starter application | [`prototype/`](prototype/): the unmodified Next.js starter, copied in by the container's `init-splitsmart` script |
+| Environment-check model | [`prototype/prisma/schema.prisma`](prototype/prisma/schema.prisma): `EnvironmentCheck` only; the SplitSmart data model comes in Lab 9 |
+| Ignored files | [`.gitignore`](.gitignore): `node_modules/`, `.next/`, `.env`, and the SQLite database are not committed |
+
+Changes to the provided Dockerfile:
+
+- The workspace paths (`TARGET` in `init-splitsmart`, and the final `WORKDIR`) point at
+  `/workspaces/SplitSmart`, the folder this repository is cloned into.
+- `init-splitsmart` also restores `prototype/.env` and creates `prototype/prisma/dev.db` when
+  they are missing. Both are gitignored, so a fresh clone of this repository has neither, and
+  because `prototype/` is already committed the script skips its template copy. Without them,
+  `npx prisma --version` and `npx prisma validate` fail with
+  `Missing required environment variable: DATABASE_URL`.
+
+Open it: start Docker, then in VS Code run **Dev Containers: Clone Repository in Container
+Volume** with `https://github.com/ibdeir12/SplitSmart.git` (branch `main`).
+
+Verification, run inside the container from `prototype/`:
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Tool versions | `node --version`, `npm --version`, `npx next --version`, `npx prisma --version`, `npx vitest --version` | v22.23.4, 10.9.9, Next.js v15.5.29, prisma 6.19.3, vitest/5.1.0 |
+| Prisma schema | `npx prisma validate` | The schema at prisma/schema.prisma is valid |
+| SQLite database | `sqlite3 prisma/dev.db ".tables"` | `EnvironmentCheck` |
+| Starter application | `npm run dev -- --hostname 0.0.0.0` | Next.js starter page at http://localhost:3000 |
 
 ## Lab 7: Architecture and Design
 
