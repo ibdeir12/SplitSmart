@@ -7,8 +7,65 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Lab 8 environment verification model, kept so the existing database keeps working.
 model EnvironmentCheck {
   id        Int      @id @default(autoincrement())
   message   String
   createdAt DateTime @default(now())
+}
+
+// A group of people who share expenses (roommates, a trip, a team).
+model Group {
+  id        Int       @id @default(autoincrement())
+  name      String
+  createdAt DateTime  @default(now())
+  members   Member[]
+  expenses  Expense[]
+}
+
+// A person in a group. Names are unique within a group.
+model Member {
+  id        Int      @id @default(autoincrement())
+  groupId   Int
+  name      String
+  createdAt DateTime @default(now())
+
+  group        Group          @relation(fields: [groupId], references: [id])
+  paidExpenses Expense[]      @relation("ExpensePayer")
+  shares       ExpenseShare[]
+
+  @@unique([groupId, name])
+  @@index([groupId])
+}
+
+// A shared expense. Money is stored as integer cents.
+model Expense {
+  id          Int      @id @default(autoincrement())
+  groupId     Int
+  description String
+  amountCents Int
+  payerId     Int
+  createdAt   DateTime @default(now())
+
+  group  Group          @relation(fields: [groupId], references: [id])
+  payer  Member         @relation("ExpensePayer", fields: [payerId], references: [id])
+  shares ExpenseShare[]
+
+  @@index([groupId])
+  @@index([payerId])
+}
+
+// One participant's share of an expense, in cents. The shares of an expense
+// always add up exactly to the expense amount.
+model ExpenseShare {
+  id         Int @id @default(autoincrement())
+  expenseId  Int
+  memberId   Int
+  shareCents Int
+
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  member  Member  @relation(fields: [memberId], references: [id])
+
+  @@unique([expenseId, memberId])
+  @@index([memberId])
 }

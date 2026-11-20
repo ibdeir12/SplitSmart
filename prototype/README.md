@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SplitSmart prototype
 
-## Getting Started
+A small web app for splitting shared expenses inside a group: create groups, add members,
+record who paid for what, and see who owes whom. Built with Next.js 15 (App Router), React 19,
+TypeScript, Tailwind CSS 4, and Prisma 6 on SQLite.
 
-First, run the development server:
+## Run it
+
+From this folder (`prototype/`):
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install            # skip inside the dev container, dependencies are preinstalled
+npm run db:push        # creates prisma/dev.db (or updates it) from prisma/schema.prisma
+npm run db:seed        # optional: adds the "Apartment 4B" demo group; safe to run again
+npm run dev            # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`DATABASE_URL` comes from `.env` (`DATABASE_URL="file:./dev.db"`). The dev container creates
+that file; on a fresh clone outside the container create it by hand. `db:push` works on an
+empty database and on a Lab 8 database that only has the `EnvironmentCheck` table. A versioned
+migration also exists in `prisma/migrations/` for `npm run db:migrate` (`prisma migrate deploy`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Other scripts: `npm test` (Vitest), `npm run lint`, `npm run build`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## What it does
 
-## Learn More
+| Feature | Where |
+|---------|-------|
+| Create and select groups | `/` lists groups; the group page has a switcher |
+| Add members (unique names per group) | Members card on `/groups/[id]` |
+| Record an expense: description, amount, payer, participants | Record an expense card, with a live preview of each share |
+| Expense history | Table at the bottom of the group page |
+| Balances: paid, share, and net per member | Balances card; the net amounts always sum to zero |
 
-To learn more about Next.js, take a look at the following resources:
+Rules enforced on the server: amounts must be positive with at most two decimals (up to
+$100,000.00); the payer and every participant must belong to the group; at least one participant
+is required; blank names and descriptions are rejected; every error is shown next to the form.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## How it is built
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+prisma/schema.prisma        Group, Member, Expense, ExpenseShare (plus the Lab 8 EnvironmentCheck)
+prisma/seed.mjs             idempotent demo data
+src/lib/money.ts            parse "12.50" / "$1,234.56" into integer cents, format cents
+src/lib/split.ts            equal split in cents; leftover cents go to the lowest member ids
+src/lib/balances.ts         net balance per member = paid - share
+src/lib/services.ts         validation and Prisma queries (create group, add member, record expense, ...)
+src/lib/actions.ts          server actions used by the forms ("use server")
+src/lib/db.ts               Prisma client singleton (server only)
+src/app/page.tsx            groups list and create form
+src/app/groups/[id]/        group page, loading skeleton, not-found page
+src/components/             forms (client components) and small UI pieces
+src/lib/*.test.ts           Vitest unit tests and SQLite integration tests
+```
 
-## Deploy on Vercel
+Money is stored and computed as integer cents, so a $10.00 expense shared by three people is
+recorded as 334 + 333 + 333 cents, never as 3.3333. Database access only happens in server
+components and server actions; the browser never loads Prisma.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Prototype limits
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+No sign-in (everyone sees the same data), equal splits only (no percentage split), no payments
+or settle-up, no approvals or notifications, no editing or deleting of expenses or members.

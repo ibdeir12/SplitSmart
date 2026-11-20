@@ -4,8 +4,91 @@ CIS 285 Software Engineering Tools.
 
 SplitSmart is an expense-sharing application for friends, roommates, family members, and
 coworkers. This repository holds its requirements (Lab 6) and its architecture and design
-(Lab 7), developed with the GitHub Spec Kit CLI (`specify`), and its Docker development
-environment (Lab 8). No SplitSmart features have been implemented yet.
+(Lab 7), developed with the GitHub Spec Kit CLI (`specify`), its Docker development
+environment (Lab 8), and a working web prototype (Lab 9).
+
+## Lab 9: SplitSmart Prototype
+
+Branch: `feature/lab9-splitsmart-prototype`. Everything lives in [`prototype/`](prototype/);
+its [README](prototype/README.md) has the run instructions and the file map.
+
+### Features implemented
+
+| Requirement | What the prototype does |
+|-------------|-------------------------|
+| FR1 Group management | Create a group from the home page; the home page lists every group with member count, expense count, and total spent; a group switcher on the group page |
+| FR2 Member management | Add members to a group (names unique within the group); member list on the group page |
+| FR3 Expense recording | Description, amount, payer, and participant chips (all members selected by default); live preview of each member's share before saving |
+| FR4 Expense history | Newest-first table with time, description, payer, each participant's share, and amount |
+| FR5 Balance calculation | Per member: paid, share, and net (`paid - share`); the net amounts always sum to zero |
+
+Business rules: equal split in integer cents; leftover cents go one each to the participants
+with the lowest member ids, so the result does not depend on selection order; amounts must be
+positive with at most two decimal places (at most $100,000.00, per the spec's FR-016); the payer
+and every participant must belong to the group; blank names and descriptions are rejected; the
+server validates everything and the forms show the message next to the field. Data lives in
+SQLite through Prisma and survives a browser refresh and a server restart.
+
+### Major files created or modified
+
+| File | Purpose |
+|------|---------|
+| `prototype/prisma/schema.prisma` | `Group`, `Member`, `Expense`, `ExpenseShare` models (the Lab 8 `EnvironmentCheck` model is kept) |
+| `prototype/prisma/migrations/20261119233721_init_splitsmart/` | SQL migration for the schema |
+| `prototype/prisma/seed.mjs` | Idempotent demo data (`npm run db:seed`) |
+| `prototype/src/lib/money.ts` | Dollar text to integer cents and back |
+| `prototype/src/lib/split.ts` | Deterministic equal split in cents |
+| `prototype/src/lib/balances.ts` | Net balance per member |
+| `prototype/src/lib/services.ts` | Validation and all Prisma queries |
+| `prototype/src/lib/actions.ts` | Server actions behind the three forms |
+| `prototype/src/lib/db.ts`, `form-state.ts`, `errors.ts` | Prisma singleton, form state type, user-facing error types |
+| `prototype/src/app/page.tsx` | Home: group list and create-group form |
+| `prototype/src/app/groups/[id]/page.tsx` (+ `loading.tsx`, `not-found.tsx`) | Group page: members, balances, expense form, history |
+| `prototype/src/app/layout.tsx`, `globals.css`, `error.tsx`, `loading.tsx` | App shell, light/dark theme, error and loading states |
+| `prototype/src/components/*.tsx` | `CreateGroupForm`, `AddMemberForm`, `ExpenseForm`, `GroupSwitcher`, `SubmitButton`, shared UI pieces |
+| `prototype/src/lib/split.test.ts`, `services.test.ts`, `vitest.config.mts` | Tests (see below) |
+| `prototype/package.json` | Scripts: `test`, `db:push`, `db:migrate`, `db:seed` |
+| `prototype/README.md` | Prototype run instructions |
+
+### Running the application
+
+```bash
+cd prototype
+npm run db:push     # create or update prisma/dev.db
+npm run db:seed     # optional demo group
+npm run dev         # open http://localhost:3000
+```
+
+Requires `prototype/.env` with `DATABASE_URL="file:./dev.db"` (the dev container creates it).
+
+### Test results
+
+Automated, `npm test` (Vitest 5.1.0, Node 24, 2026-11-19): **22 passed, 0 failed** in two files.
+`split.test.ts` covers the split, money parsing, and balance math in isolation;
+`services.test.ts` runs the real service layer against a throwaway SQLite database.
+
+| Required check | How it was verified | Result |
+|----------------|--------------------|--------|
+| A group can be created | `services.test.ts` "creates a group and lists it"; browser: created "Lab 9 Test" | Pass |
+| Three members can be added | `services.test.ts` "adds three members"; browser: Alice, Bob, Charlie added, duplicate "Alice" rejected | Pass |
+| $60 shared by three gives Alice +$40, Bob -$20, Charlie -$20 | `split.test.ts` and `services.test.ts` "$60 expense"; browser: balances card showed +$40.00 / -$20.00 / -$20.00 | Pass |
+| Multiple expenses update balances correctly | `services.test.ts` "multiple expenses"; browser: after a second $10 expense paid by Bob, balances were +$36.66 / -$13.33 / -$23.33 | Pass |
+| Invalid amounts and member ids are rejected | `services.test.ts` "rejects invalid amounts" (`0`, `-5`, `abc`, empty, `12.345`) and "rejects payers and participants who are not in the group" (member of another group, unknown id, non-numeric id); browser: `-5` and `abc` showed the error and saved nothing | Pass |
+| Data persists after refreshing the browser | `services.test.ts` "persists data across client instances"; browser: reloaded `/groups/2`, both expenses and balances still there | Pass |
+| $10 shared by three is allocated to the cent | `split.test.ts` and `services.test.ts`: 334 + 333 + 333 cents; browser: history row shows Alice $3.34, Bob $3.33, Charlie $3.33 | Pass |
+| All balances sum to zero | asserted in `split.test.ts` and `services.test.ts`; `split.test.ts` also checks every amount from 1 to 500 cents across 1 to 7 participants sums exactly | Pass |
+
+Also run: `npm run lint` (clean), `npx tsc --noEmit` (clean), `npm run build` (succeeds), and a
+manual pass at phone width (375 px) and in light and dark mode.
+
+### Known issues and incomplete functionality
+
+- Equal splits only; percentage splits, payments or settle-up, approvals, notifications, reports,
+  and sign-in from the full specification are not in the prototype.
+- Expenses and members cannot be edited or deleted.
+- A wrong group id renders the "Group not found" page but, because the page streams behind a
+  loading skeleton, the HTTP status is 200 rather than 404.
+- The expense history table scrolls horizontally on narrow phones.
 
 ## Lab 8: Development Environment
 
